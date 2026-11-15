@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, 'feat/**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck + unit (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # Unit tests plus the in-process DHT roundtrip (no TUI, no tmux).
+      - run: npm test
+
+  e2e:
+    name: headless e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - run: npm ci
+
+      # Two real CLI processes, a local bootstrapper, and a byte-for-byte comparison.
+      - run: npm run e2e
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            dist/
+          if-no-files-found: ignore
+
+  no-pearcore:
+    name: no pearcore references
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if the retired engine is referenced
+        run: |
+          if grep -ril 'pearcore' src scripts bin test docs README.md package.json; then
+            echo "::error::pearcore references found (see the files above)"
+            exit 1
+          fi
+          echo "clean"

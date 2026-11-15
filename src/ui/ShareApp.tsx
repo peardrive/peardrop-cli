@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { TextAttributes } from '@opentui/core';
 import { ErrorCorrectionLevel } from '@opentui/qrcode';
 import { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/react';
-import type { ShareController, ShareFile } from '../core/share.js';
+import type { ShareController, ShareFile, ShareSnapshot } from '../core/share.js';
 import { LinkCopier, describeCopy } from '../core/clipboard.js';
-import { formatBytes, theme, truncateMiddle } from './theme.js';
+import { formatBytes, formatSpeed, theme, truncateMiddle } from './theme.js';
 import { FileList, Header, KeyHints, Panel, ProgressBar, Spinner, useListCursor, type ListRow } from './widgets.js';
 
 export function ShareApp({
@@ -31,7 +31,7 @@ export function ShareApp({
     void copier.copy(link).then((outcome) => setCopyStatus(describeCopy(outcome)));
   };
 
-  // Copy the link as soon as the space exists, so it can be pasted on the other device right away.
+  // Copy the link as soon as the drive is built, so it can be pasted on the other device right away.
   useEffect(() => {
     if (autoCopy && sharelink && !autoCopied.current) {
       autoCopied.current = true;
@@ -60,7 +60,7 @@ export function ShareApp({
     }
   });
 
-  const focusIndex = state.files.findIndex((file) => file.state === 'indexing');
+  const focusIndex = state.files.findIndex((file) => file.state === 'copying');
   const { cursor, follow } = useListCursor(state.files.length, listHeight - 1, focusIndex);
 
   if (state.phase === 'error') {
@@ -75,11 +75,9 @@ export function ShareApp({
     );
   }
 
-  const indexed = state.counts.ready;
-  const total = state.files.length;
   const ready = state.phase === 'ready';
-  const overall = state.totalBytes > 0 ? (state.indexedBytes / state.totalBytes) * 100 : ready ? 100 : 0;
-
+  const total = state.files.length;
+  const overall = state.totalBytes > 0 ? (state.copiedBytes / state.totalBytes) * 100 : ready ? 100 : 0;
   const rows: ListRow[] = state.files.map((file) => toRow(file));
 
   if (showQR && sharelink) {
@@ -94,18 +92,7 @@ export function ShareApp({
 
   return (
     <box flexDirection="column" width={width} height={height}>
-      <Header
-        mode={state.isDirectory ? 'share folder' : 'share file'}
-        right={
-          <text>
-            {state.receivers.length > 0 ? (
-              <span fg={theme.ok}>● {state.receivers.length} receiver{state.receivers.length === 1 ? '' : 's'} connected</span>
-            ) : (
-              <span fg={theme.muted}>○ no receivers yet</span>
-            )}
-          </text>
-        }
-      />
+      <Header mode={state.isDirectory ? 'share folder' : 'share file'} right={<ReceiverBadge state={state} />} />
 
       <Panel title="Sharelink" borderColor={ready ? theme.brand : theme.border}>
         {sharelink ? (
@@ -127,12 +114,12 @@ export function ShareApp({
           </>
         ) : (
           <text>
-            <Spinner /> <span fg={theme.muted}>creating space…</span>
+            <Spinner /> <span fg={theme.muted}>building the share… the link appears when it is ready</span>
           </text>
         )}
       </Panel>
 
-      <Panel title={ready ? 'Ready' : 'Indexing'} borderColor={ready ? theme.brand : theme.border} height={4}>
+      <Panel title={ready ? 'Ready' : 'Preparing'} borderColor={ready ? theme.brand : theme.border} height={4}>
         <box flexDirection="row" height={1}>
           <text>
             {ready ? (
@@ -141,14 +128,15 @@ export function ShareApp({
               </span>
             ) : (
               <>
-                <Spinner /> <span fg={theme.text}>Indexing files </span>
+                <Spinner /> <span fg={theme.text}>Copying into the drive </span>
               </>
             )}
             <span fg={theme.muted}>
               {'  '}
-              {indexed}/{total} file{total === 1 ? '' : 's'} · {formatBytes(state.indexedBytes)} / {formatBytes(state.totalBytes)}
+              {state.counts.ready}/{total} file{total === 1 ? '' : 's'} · {formatBytes(state.copiedBytes)} /{' '}
+              {formatBytes(state.totalBytes)}
             </span>
-            {state.counts.skipped > 0 ? <span fg={theme.warn}>{`  ${state.counts.skipped} skipped`}</span> : null}
+            {ready && !state.announced ? <span fg={theme.warn}>{'  announcing…'}</span> : null}
             {state.counts.error > 0 ? <span fg={theme.error}>{`  ${state.counts.error} failed`}</span> : null}
           </text>
         </box>
@@ -158,7 +146,7 @@ export function ShareApp({
       </Panel>
 
       <Panel
-        title={`Files (${total})${state.requestedBytes > 0 ? ` · ${formatBytes(state.requestedBytes)} requested by receivers` : ''}`}
+        title={`Files (${total})${state.sentBytes > 0 ? ` · ${formatBytes(state.sentBytes)} sent` : ''}`}
         flexGrow={1}
       >
         <FileList rows={rows} height={listHeight} width={width - 4} cursor={cursor} />
@@ -174,6 +162,31 @@ export function ShareApp({
         ]}
       />
     </box>
+  );
+}
+
+function ReceiverBadge({ state }: { state: ShareSnapshot }) {
+  if (state.receivers.length > 0) {
+    const upload = state.uploadPercent > 0 ? ` · ${state.uploadPercent}% · ${formatSpeed(state.uploadSpeed)}` : '';
+    return (
+      <text>
+        <span fg={theme.ok}>
+          ● {state.receivers.length} receiver{state.receivers.length === 1 ? '' : 's'} connected{upload}
+        </span>
+      </text>
+    );
+  }
+  if (state.reachable === false) {
+    return (
+      <text>
+        <span fg={theme.warn}>○ DHT unreachable</span>
+      </text>
+    );
+  }
+  return (
+    <text>
+      <span fg={theme.muted}>○ no receivers yet</span>
+    </text>
   );
 }
 
@@ -205,10 +218,10 @@ function toRow(file: ShareFile): ListRow {
         label: file.virtualPath,
         percent: 100,
         done: true,
-        status: file.requestedLeaves > 0 ? `↑ ${formatBytes(Math.min(file.size, file.requestedLeaves * 256 * 1024))}` : formatBytes(file.size),
-        statusColor: file.requestedLeaves > 0 ? theme.info : theme.muted,
+        status: formatBytes(file.size),
+        statusColor: theme.muted,
       };
-    case 'indexing':
+    case 'copying':
       return {
         key: file.id,
         icon: <Spinner />,
@@ -217,16 +230,6 @@ function toRow(file: ShareFile): ListRow {
         done: false,
         status: formatBytes(file.size),
         statusColor: theme.accent,
-      };
-    case 'skipped':
-      return {
-        key: file.id,
-        icon: <span fg={theme.warn}>↷</span>,
-        label: file.virtualPath,
-        percent: null,
-        done: true,
-        status: `skipped: ${file.error ?? ''}`,
-        statusColor: theme.warn,
       };
     case 'error':
       return {

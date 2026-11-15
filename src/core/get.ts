@@ -1,23 +1,25 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import * as EVENTS from 'pearcore/src/constants/events.constants.js';
-import { decodeShareLink } from 'pearcore/src/utils/sharelink.utils.js';
-import type { SpaceDownloadTask, SpaceDriveBrowser, SpaceInstance } from 'pearcore/src/core.js';
-import { openSession, type PeardropSession } from './session.js';
+import { downloadFromDrive } from '@engine/hyperdrive/downloader';
+import { NetworkProbe } from '@engine/hyperdrive/network-probe';
+import { parseShareLink } from '@engine/hyperdrive/share-link';
+import type { RemoteFile } from '@engine/hyperdrive/types';
+import { createLogger, openSession, type PeardropSession } from './session.js';
 import { Store } from './store.js';
 
-const LIST_POLL_MS = 1000;
+/** How often the DHT reachability probe is sampled for the header. */
+const COUNTERS_POLL_MS = 1000;
 
-export type GetFileState = 'queued' | 'starting' | 'downloading' | 'done' | 'skipped' | 'error';
-export type GetPhase = 'starting' | 'waiting' | 'connected' | 'synced' | 'error';
+export type GetFileState = 'queued' | 'downloading' | 'done' | 'error';
+export type GetPhase = 'starting' | 'connecting' | 'downloading' | 'done' | 'error';
 
 export interface GetFile {
   id: number;
+  /** The file's key inside the share, e.g. "/sample/nested/a.txt". */
   virtualPath: string;
+  /** Absolute path on disk, once known. */
   destination: string;
+  size: number;
   state: GetFileState;
   percent: number | null;
-  providers: number;
   note?: string;
 }
 
@@ -25,31 +27,34 @@ export interface GetSnapshot {
   phase: GetPhase;
   error?: string;
   sharelink: string;
+  /** The drive key carried by the link. */
   ownerKey?: string;
+  driveId?: string;
+  shareName?: string;
   outDir: string;
-  concurrency: number;
-  peers: string[];
-  ownerConnected: boolean;
+  /** Folder the files were actually written to (may gain a "(1)"). */
+  downloadPath?: string;
+  peerConnected: boolean;
   everConnected: boolean;
   files: GetFile[];
   counts: Record<GetFileState, number>;
-  lastListedAt?: number;
+  totalBytes: number;
+  receivedBytes: number;
+  /** 0–100, or null while the total is unknown. */
+  percent: number | null;
+  /** Bytes per second. */
+  speed: number;
+  partial: boolean;
+  failedCount: number;
+  truncated: { available: number; shown: number } | null;
+  reachable: boolean | null;
+  cancelled: boolean;
 }
 
 export interface GetOptions {
   sharelink: string;
   outDir: string;
-  concurrency: number;
   bootstrap: string | null;
-}
-
-/** Resolve a space path inside outDir, refusing anything that escapes it ("/../../.bashrc"). */
-export function safeDestination(outDir: string, virtualPath: string): string | null {
-  const normalized = path.posix.normalize('/' + virtualPath).replace(/^\/+/, '');
-  if (!normalized || normalized.split('/').includes('..')) return null;
-  const destination = path.resolve(outDir, ...normalized.split('/'));
-  const root = path.resolve(outDir) + path.sep;
-  return destination.startsWith(root) ? destination : null;
 }
 
 export class GetController {
@@ -57,22 +62,30 @@ export class GetController {
 
   #options: GetOptions;
   #session: PeardropSession | null = null;
-  #topic: string | null = null;
-  #ownerKey?: string;
-  #space: SpaceInstance | null = null;
-  #drive: SpaceDriveBrowser | null = null;
+  #probe: NetworkProbe | null = null;
+  #listeners: Array<[string, (...args: any[]) => void]> = [];
 
   #phase: GetPhase = 'starting';
   #error?: string;
-  #peers = new Set<string>();
+  #ownerKey?: string;
+  #driveId?: string;
+  #shareName?: string;
+  #downloadPath?: string;
+  #peerConnected = false;
   #everConnected = false;
   #files: GetFile[] = [];
-  #byPath = new Map<string, GetFile>();
-  #queue: GetFile[] = [];
-  #active = 0;
-  #tasks = new Map<number, SpaceDownloadTask>();
-  #pollTimer: NodeJS.Timeout | null = null;
-  #lastListedAt?: number;
+  #byKey = new Map<string, GetFile>();
+  #totalBytes = 0;
+  #receivedBytes = 0;
+  #percent: number | null = null;
+  #speed = 0;
+  #partial = false;
+  #failedCount = 0;
+  #truncated: { available: number; shown: number } | null = null;
+  #reachable: boolean | null = null;
+  #countersTimer: NodeJS.Timeout | null = null;
+  #cancelled = false;
+  #abort: (() => void) | null = null;
   #stopped = false;
 
   constructor(options: GetOptions) {
@@ -82,153 +95,171 @@ export class GetController {
 
   async start(): Promise<void> {
     try {
-      const decoded = decodeShareLink(this.#options.sharelink);
-      if (!decoded) throw new Error('This does not look like a valid sharelink.');
-      this.#ownerKey = decoded.publicKey;
+      const key = parseShareLink(this.#options.sharelink);
+      if (!key) throw new Error('This does not look like a valid sharelink.');
+      this.#ownerKey = key;
 
-      fs.mkdirSync(this.#options.outDir, { recursive: true });
+      this.#session = await openSession({ bootstrap: this.#options.bootstrap, role: 'get' });
+      this.#wireEvents();
+      this.#startProbe();
 
-      this.#session = await openSession({
-        bootstrap: this.#options.bootstrap,
-        role: 'get',
-        baseDir: path.join(this.#options.outDir, '.peardrop-partial'),
-      });
-      const { core } = this.#session;
-      this.#wireNetworkEvents();
-
-      const joined = await core.space.join(this.#options.sharelink);
-      this.#topic = joined.topicHash;
-      this.#phase = 'waiting';
+      this.#phase = 'connecting';
       this.store.touch(true);
+
+      const opened = await this.#session.manager.openDrive(this.#options.sharelink);
+      if (this.#stopped) return;
+
+      this.#driveId = opened.driveId;
+      this.#shareName = opened.shareName ?? undefined;
+      this.#truncated = opened.truncated;
+      this.#totalBytes = opened.totalBytes;
+      this.#peerConnected = opened.peerConnected;
+      this.#everConnected = opened.peerConnected;
+      this.#files = opened.files.map((file, id) => toGetFile(file, id));
+      this.#byKey = new Map(this.#files.map((file) => [file.virtualPath, file]));
+      this.#phase = 'downloading';
+      this.store.touch(true);
+
+      await this.#download();
     } catch (error) {
+      if (this.#cancelled) return;
       this.#fail(error);
     }
   }
 
-  #wireNetworkEvents(): void {
-    const { core } = this.#session!;
+  #wireEvents(): void {
+    const manager = this.#session!.manager;
+    const on = (event: string, fn: (...args: any[]) => void) => {
+      manager.on(event, fn);
+      this.#listeners.push([event, fn]);
+    };
 
-    core.emitter.on(EVENTS.Handshake, ({ publicKey }: any) => {
-      this.#peers.add(publicKey);
-      this.#everConnected = true;
-      if (this.#phase === 'waiting') this.#phase = 'connected';
+    // The engine reports receive-side liveness every 30s while it searches.
+    on('connection-status', (data: { driveId: string; peerConnected: boolean }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      this.#peerConnected = data.peerConnected;
+      if (data.peerConnected) this.#everConnected = true;
       this.store.touch(true);
     });
 
-    core.emitter.on(EVENTS.Disconnect, ({ publicKey }: any) => {
-      if (this.#peers.delete(publicKey)) this.store.touch(true);
+    on('download-peer-disconnected', (data: { driveId: string }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      this.#peerConnected = false;
+      this.store.touch(true);
     });
-
-    core.emitter.on(EVENTS.SpaceSync, () => {
-      this.#onSpaceSync().catch((error) => this.#fail(error));
-    });
-
-    // Live listing: refresh as soon as the sharer announces changes...
-    core.emitter.on(EVENTS.SpaceFileEvent, () => this.#refreshList());
   }
 
-  async #onSpaceSync(): Promise<void> {
-    if (this.#drive || !this.#session || !this.#topic) return;
-    const spaces = await this.#session.core.space.list();
-    const space = spaces.find((s) => s.isSync && s.topicHash === this.#topic);
-    if (!space || this.#drive) return;
+  #isOurs(driveId: string): boolean {
+    return !this.#driveId || this.#driveId === driveId;
+  }
 
-    this.#space = space;
-    this.#drive = this.#session.core.drives.get(space);
-    this.#phase = 'synced';
+  async #download(): Promise<void> {
+    const manager = this.#session!.manager;
+    const session = this.#driveId ? manager.activeDrives.get(this.#driveId) : undefined;
+    if (!session) throw new Error('The sender closed the connection before the download started.');
+
+    const result = await downloadFromDrive(session.drive, {
+      destDir: this.#options.outDir,
+      totalBytes: this.#totalBytes,
+      shareName: this.#shareName ?? null,
+      isCancelled: () => this.#cancelled,
+      registerAborter: (abort) => {
+        this.#abort = abort;
+      },
+      onRoot: (root) => {
+        this.#downloadPath = root;
+      },
+      onProgress: (data) => {
+        if (this.#cancelled) return;
+        this.#percent = data.percent >= 0 ? data.percent : null;
+        this.#receivedBytes = data.bytesTransferred;
+        this.#speed = data.speed;
+        this.store.touch();
+      },
+      onFileStart: ({ key }) => {
+        const file = this.#byKey.get(key);
+        if (!file) return;
+        file.state = 'downloading';
+        this.store.touch();
+      },
+      onFileDone: ({ key, size, path: written, error }) => {
+        const file = this.#byKey.get(key);
+        if (!file) return;
+        if (error) {
+          file.state = 'error';
+          file.percent = null;
+          file.note = error;
+          this.#failedCount += 1;
+        } else {
+          file.state = 'done';
+          file.percent = 100;
+          file.size = size || file.size;
+          if (written) file.destination = written;
+        }
+        this.store.touch();
+      },
+    });
+
+    if (this.#cancelled) return;
+
+    // Zero files retrieved is never a success: either the sender had nothing to send, or its
+    // file list never replicated. Reporting "done" here would hide a broken transfer.
+    if (result.files.length === 0) {
+      throw new Error(
+        result.failed.length > 0
+          ? 'The sender went offline before any files transferred'
+          : 'No files received — the sender never sent its file list',
+      );
+    }
+
+    // The result is authoritative for sizes and final paths (including "(1)" renames).
+    for (const file of result.files) {
+      const row = file.key ? this.#byKey.get(file.key) : undefined;
+      if (!row) continue;
+      row.state = 'done';
+      row.percent = 100;
+      row.destination = file.path;
+      row.size = file.size || row.size;
+    }
+
+    this.#downloadPath = result.destDir;
+    this.#receivedBytes = result.totalBytes;
+    this.#percent = 100;
+    this.#speed = 0;
+    this.#partial = result.failed.length > 0;
+    this.#failedCount = result.failed.length;
+    this.#phase = 'done';
     this.store.touch(true);
-
-    this.#refreshList();
-    // ...and keep polling: pearcore offers no "file list changed" subscription on the drive itself.
-    this.#pollTimer = setInterval(() => this.#refreshList(), LIST_POLL_MS);
   }
 
-  #refreshList(): void {
-    if (!this.#drive || this.#stopped) return;
-    const paths = this.#drive.files({ recursive: true }).sort((a, b) => a.localeCompare(b));
-    this.#lastListedAt = Date.now();
+  #startProbe(): void {
+    const session = this.#session!;
+    this.#probe = new NetworkProbe({ bootstrap: session.nodes, log: createLogger() });
+    this.#probe.start();
 
-    let changed = false;
-    for (const virtualPath of paths) {
-      if (this.#byPath.has(virtualPath)) continue;
-      const destination = safeDestination(this.#options.outDir, virtualPath);
-      const file: GetFile = {
-        id: this.#files.length,
-        virtualPath,
-        destination: destination ?? '',
-        state: 'queued',
-        percent: null,
-        providers: 0,
-      };
-      if (!destination) {
-        file.state = 'error';
-        file.note = 'unsafe path, refused';
-      } else if (fs.existsSync(destination)) {
-        file.state = 'skipped';
-        file.note = 'already exists';
-      } else {
-        this.#queue.push(file);
-      }
-      this.#files.push(file);
-      this.#byPath.set(virtualPath, file);
-      changed = true;
-    }
-
-    if (changed) this.store.touch();
-    this.#pump();
-  }
-
-  /** Keep at most `concurrency` downloads running; a slot frees up on the task's completion event. */
-  #pump(): void {
-    while (!this.#stopped && this.#active < this.#options.concurrency && this.#queue.length > 0) {
-      const file = this.#queue.shift()!;
-      this.#active += 1;
-      this.#download(file).catch((error) => this.#finish(file, error));
-    }
-  }
-
-  async #download(file: GetFile): Promise<void> {
-    file.state = 'starting';
-    this.store.touch();
-
-    const entry = await this.#drive!.getFile(file.virtualPath);
-    const variants = entry.variants;
-    if (variants.length === 0) throw new Error('no provider advertises this file anymore');
-
-    // Prefer the variant offered by the most providers.
-    const rootHash = [...variants].sort(
-      (a, b) => entry.getProvidersForVariant(b).length - entry.getProvidersForVariant(a).length,
-    )[0]!;
-    file.providers = entry.getProvidersForVariant(rootHash).length;
-
-    const task = await entry.download(rootHash, file.destination);
-    if (!task) throw new Error('download could not be started');
-    this.#tasks.set(file.id, task);
-
-    file.state = 'downloading';
-    file.percent = task.getProgress().percent;
-    this.store.touch();
-
-    task.onProgress((snapshot) => {
-      file.percent = snapshot.percent;
+    const tick = () => {
+      if (this.#stopped) return;
+      this.#reachable = this.#probe?.reachable ?? null;
       this.store.touch();
-    });
-    task.onComplete(() => this.#finish(file));
+      this.#countersTimer = setTimeout(tick, COUNTERS_POLL_MS);
+      this.#countersTimer.unref?.();
+    };
+    tick();
   }
 
-  #finish(file: GetFile, error?: unknown): void {
-    if (file.state === 'done' || file.state === 'error') return;
-    if (error) {
-      file.state = 'error';
-      file.note = error instanceof Error ? error.message : String(error);
-    } else {
-      file.state = 'done';
-      file.percent = 100;
+  /** Stop the transfer. Partial files are removed by the downloader. */
+  cancel(): void {
+    if (this.#cancelled) return;
+    this.#cancelled = true;
+    try {
+      this.#abort?.();
+    } catch {}
+    this.#abort = null;
+    if (this.#phase === 'connecting') {
+      // Still waiting for the sender: abort the pending connection.
+      void this.#session?.manager.abortAllConnections({ force: true });
     }
-    this.#tasks.delete(file.id);
-    this.#active -= 1;
-    this.store.touch();
-    this.#pump();
+    this.store.touch(true);
   }
 
   #fail(error: unknown): void {
@@ -239,21 +270,21 @@ export class GetController {
 
   async stop(): Promise<void> {
     this.#stopped = true;
-    if (this.#pollTimer) clearInterval(this.#pollTimer);
+    if (this.#countersTimer) clearTimeout(this.#countersTimer);
+    this.#countersTimer = null;
+
+    const manager = this.#session?.manager;
+    for (const [event, fn] of this.#listeners) manager?.removeListener(event, fn);
+    this.#listeners = [];
+
+    await this.#probe?.stop();
+    this.#probe = null;
     this.store.dispose();
-    await Promise.allSettled([...this.#tasks.values()].map((task) => task.stop()));
     await this.#session?.close();
   }
 
   #snapshot(): GetSnapshot {
-    const counts: Record<GetFileState, number> = {
-      queued: 0,
-      starting: 0,
-      downloading: 0,
-      done: 0,
-      skipped: 0,
-      error: 0,
-    };
+    const counts: Record<GetFileState, number> = { queued: 0, downloading: 0, done: 0, error: 0 };
     for (const file of this.#files) counts[file.state] += 1;
 
     return {
@@ -261,14 +292,34 @@ export class GetController {
       error: this.#error,
       sharelink: this.#options.sharelink,
       ownerKey: this.#ownerKey,
+      driveId: this.#driveId,
+      shareName: this.#shareName,
       outDir: this.#options.outDir,
-      concurrency: this.#options.concurrency,
-      peers: [...this.#peers],
-      ownerConnected: this.#ownerKey ? this.#peers.has(this.#ownerKey) : false,
+      downloadPath: this.#downloadPath,
+      peerConnected: this.#peerConnected,
       everConnected: this.#everConnected,
       files: this.#files.map((file) => ({ ...file })),
       counts,
-      lastListedAt: this.#lastListedAt,
+      totalBytes: this.#totalBytes,
+      receivedBytes: this.#receivedBytes,
+      percent: this.#percent,
+      speed: this.#speed,
+      partial: this.#partial,
+      failedCount: this.#failedCount,
+      truncated: this.#truncated,
+      reachable: this.#reachable,
+      cancelled: this.#cancelled,
     };
   }
+}
+
+function toGetFile(file: RemoteFile, id: number): GetFile {
+  return {
+    id,
+    virtualPath: file.name,
+    destination: file.path ?? '',
+    size: file.size || 0,
+    state: 'queued',
+    percent: null,
+  };
 }

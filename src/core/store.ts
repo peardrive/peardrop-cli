@@ -2,8 +2,8 @@
  * Tiny external store for React's useSyncExternalStore.
  *
  * Controllers keep a mutable model and call `touch()` whenever it changes. The immutable
- * snapshot is rebuilt at most every `intervalMs`: pearcore progress trackers fire once per
- * 256KB leaf, which would otherwise re-render the TUI thousands of times per second.
+ * snapshot is rebuilt at most every `intervalMs`: engine progress fires per block, which
+ * would otherwise re-render the TUI thousands of times per second.
  */
 export class Store<T> {
   #snapshot: T;

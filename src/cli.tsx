@@ -4,94 +4,18 @@ import { format } from 'node:util';
 import { createCliRenderer } from '@opentui/core';
 import { createRoot } from '@opentui/react';
 import { registerQRCode } from '@opentui/qrcode/react';
-import { ShareController } from './core/share.js';
+import { parseArgs, HELP, type Args } from './cli/args.js';
+import { runGetHeadless, runShareHeadless } from './cli/headless.js';
 import { GetController } from './core/get.js';
+import { ShareController } from './core/share.js';
 import { peardropHome } from './core/session.js';
 import { ShareApp } from './ui/ShareApp.js';
 import { GetApp } from './ui/GetApp.js';
 import { ErrorBoundary } from './ui/ErrorBoundary.js';
 
-const HELP = `peardrop: share files and folders peer-to-peer (powered by pearcore)
-
-Usage
-  peardrop share <file|directory> [options]
-  peardrop get <sharelink> [options]
-
-Options
-  -o, --out <dir>          (get) where to save files            default: current directory
-  -n, --concurrency <N>    (get) parallel downloads              default: 3
-  -b, --bootstrap <h:p>    custom DHT bootstrapper (e.g. 127.0.0.1:49737); env PEARDROP_BOOTSTRAP
-      --no-copy            (share) don't copy the sharelink to the clipboard automatically
-  -h, --help               show this help
-`;
-
-interface Args {
-  command?: string;
-  target?: string;
-  out: string;
-  concurrency: number;
-  bootstrap: string | null;
-  help: boolean;
-  copy: boolean;
-}
-
-function parseArgs(argv: string[]): Args {
-  const args: Args = {
-    out: process.cwd(),
-    concurrency: 3,
-    bootstrap: process.env.PEARDROP_BOOTSTRAP || null,
-    help: false,
-    copy: true,
-  };
-  const positional: string[] = [];
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    const [flag, inline] = arg.startsWith('--') && arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, undefined];
-    const value = () => {
-      const v = inline ?? argv[++i];
-      if (v === undefined) throw new Error(`Missing value for ${flag}`);
-      return v;
-    };
-    switch (flag) {
-      case '-h':
-      case '--help':
-        args.help = true;
-        break;
-      case '-o':
-      case '--out':
-        args.out = path.resolve(value());
-        break;
-      case '-n':
-      case '--concurrency': {
-        const n = Number(value());
-        if (!Number.isInteger(n) || n < 1 || n > 32) throw new Error('--concurrency must be an integer between 1 and 32');
-        args.concurrency = n;
-        break;
-      }
-      case '--no-copy':
-        args.copy = false;
-        break;
-      case '-b':
-      case '--bootstrap': {
-        const v = value();
-        if (!/^[^:\s]+:\d+$/.test(v)) throw new Error('--bootstrap expects host:port');
-        args.bootstrap = v;
-        break;
-      }
-      default:
-        if (flag.startsWith('-')) throw new Error(`Unknown option ${flag}`);
-        positional.push(arg);
-    }
-  }
-
-  [args.command, args.target] = positional;
-  return args;
-}
-
 /**
- * Everything printed while the TUI owns the terminal would corrupt the screen, and pearcore
- * still has stray console.log/console.error calls. Send them to ~/.peardrop/peardrop.log.
+ * Everything printed while the TUI owns the terminal would corrupt the screen, and the
+ * engine still logs through console. Send it all to ~/.peardrop/peardrop.log.
  */
 function redirectConsole(): string {
   const logFile = path.join(peardropHome(), 'peardrop.log');
@@ -137,6 +61,13 @@ async function main() {
   }
 
   const logFile = redirectConsole();
+
+  if (args.json) {
+    const code = args.command === 'share' ? await runShareHeadless(args) : await runGetHeadless(args);
+    if (process.env.PEARDROP_DEBUG) process.stderr.write(`log: ${logFile}\n`);
+    process.exit(code);
+  }
+
   registerQRCode();
 
   const renderer = await createCliRenderer({
@@ -170,14 +101,15 @@ async function main() {
     const controller = new GetController({
       sharelink: args.target.trim(),
       outDir: args.out,
-      concurrency: args.concurrency,
       bootstrap: args.bootstrap,
     });
     const quit = async () => {
       if (quitting) return;
       quitting = true;
+      controller.cancel();
       const snap = controller.store.get();
-      summary = `Received ${snap.counts.done} file(s) into ${snap.outDir}.`;
+      const where = snap.downloadPath ?? snap.outDir;
+      summary = `Received ${snap.counts.done} file(s) into ${where}.`;
       await shutdown(renderer, () => controller.stop(), summary, logFile);
     };
     root.render(
@@ -200,7 +132,7 @@ async function shutdown(
   renderer.destroy();
   process.stdout.write('Closing peer connections…\n');
   try {
-    await Promise.race([stop(), new Promise((resolve) => setTimeout(resolve, 6000))]);
+    await Promise.race([stop(), new Promise((resolve) => setTimeout(resolve, 8000))]);
   } catch {
     // ignore
   }

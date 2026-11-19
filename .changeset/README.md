@@ -22,4 +22,4 @@ Repo-only work (CI, workflows, release scripts, labels) does not need a changese
 `no-changeset` label to the PR instead.
 
 At release time `npm run release:prepare` consumes these files: it bumps `package.json`, writes
-`CHANGELOG.md` and deletes the consumed entries. See [../docs/releasing.md](../docs/releasing.md).
+`CHANGELOG.md` and deletes the consumed entries. See [../RELEASING.md](../RELEASING.md).

@@ -49,7 +49,7 @@ Before opening the PR, describe the change for the changelog:
 npx changeset
 ```
 
-Pick the bump (see [`.changeset/README.md`](../.changeset/README.md)) and write a sentence or two for
+Pick the bump (see [`.changeset/README.md`](.changeset/README.md)) and write a sentence or two for
 people using the CLI. Commit the generated `.changeset/*.md` file. CI/tooling-only PRs can skip this
 with the `no-changeset` label.
 
@@ -136,7 +136,7 @@ is not supported for day-to-day use.
    *rebase merging*; set squash commit message to *Pull request title and description*; enable
    *Automatically delete head branches*.
 3. **Settings → Rules → Rulesets → New ruleset → Import a ruleset**, once for each file in
-   [`.github/rulesets/`](../.github/rulesets): `main.json`, `develop.json`, `release-tags.json`.
+   [`.github/rulesets/`](.github/rulesets): `main.json`, `develop.json`, `release-tags.json`.
 4. **Settings → Actions → General → Workflow permissions**: *Read and write permissions* (the
    Release workflow pushes tags and creates releases).
 5. **Actions → Repo setup (labels) → Run workflow** to create the labels.

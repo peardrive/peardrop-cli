@@ -138,7 +138,7 @@ npx changeset
 PRs into `develop` are squash-merged and must pass typecheck, unit tests, the DHT roundtrip,
 headless e2e, `pr-title` and `changeset`. Releases are cut from `develop` with
 `npm run release:prepare` and merged into `main`, where CI tags `vX.Y.Z` and publishes a GitHub
-Release. Read [docs/contributing.md](docs/contributing.md) and
-[docs/releasing.md](docs/releasing.md) for the full flow, branch naming and versioning.
+Release. Read [CONTRIBUTING.md](CONTRIBUTING.md) and
+[RELEASING.md](RELEASING.md) for the full flow, branch naming and versioning.
 
 The current version is **0.1.0**; see [CHANGELOG.md](CHANGELOG.md).

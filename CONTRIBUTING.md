@@ -21,7 +21,7 @@ In short:
 
 Branch types: `feat/`, `fix/`, `docs/`, `refactor/`, `perf/`, `test/`, `build/`, `ci/`, `chore/` —
 always followed by the issue number. Releases, hotfixes, versioning and the one-time GitHub setup
-are in [releasing.md](releasing.md).
+are in [RELEASING.md](RELEASING.md).
 
 ## Setup
 
@@ -35,7 +35,7 @@ npm run e2e       # two real CLI processes + local bootstrapper + byte compariso
 npm link          # optional: puts `peardrop` on your PATH
 ```
 
-`npm run e2e:tui` drives the real TUI and needs `tmux`; it is local-only. See the [README](../README.md)
+`npm run e2e:tui` drives the real TUI and needs `tmux`; it is local-only. See the [README](README.md)
 for usage, the `--json` event surface and local testing against a private bootstrapper.
 
 ## Project layout
@@ -50,15 +50,17 @@ src/shared/             backend-neutral transfer/bootstrap types
 src/ui/                 OpenTUI React screens and widgets
 scripts/                bootstrapper, e2e runners, release prep
 test/                   unit and engine roundtrip tests
-docs/                   guides (this file, ENGINE.md, releasing.md)
+docs/                   ENGINE.md (engine provenance and re-sync notes)
 .changeset/             pending changelog entries, consumed at release time
 .github/                issue/PR templates, CI and release workflows, branch rulesets
+CONTRIBUTING.md         this file
+RELEASING.md            GitFlow, releases, hotfixes, one-time setup
 ```
 
 ## Rules of thumb
 
 1. **The engine is a copy, not a dependency.** `src/engine/` mirrors the PearDrop desktop app's
-   engine; keep edits minimal and record them in [docs/ENGINE.md](ENGINE.md) so a re-sync stays a
+   engine; keep edits minimal and record them in [docs/ENGINE.md](docs/ENGINE.md) so a re-sync stays a
    straight copy.
 2. **The retired engine stays retired.** It must not come back; CI's guard job fails the build if
    its name appears in `src`, `scripts`, `bin`, `test`, `docs`, `README.md` or `package.json`.

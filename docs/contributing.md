@@ -60,8 +60,8 @@ docs/                   guides (this file, ENGINE.md, releasing.md)
 1. **The engine is a copy, not a dependency.** `src/engine/` mirrors the PearDrop desktop app's
    engine; keep edits minimal and record them in [docs/ENGINE.md](ENGINE.md) so a re-sync stays a
    straight copy.
-2. **No `pearcore`.** The retired engine must not come back; CI's `no-pearcore` job fails the build
-   if the name appears in `src`, `scripts`, `bin`, `test`, `docs`, `README.md` or `package.json`.
+2. **The retired engine stays retired.** It must not come back; CI's guard job fails the build if
+   its name appears in `src`, `scripts`, `bin`, `test`, `docs`, `README.md` or `package.json`.
 3. **Never write outside the output folder.** Paths from a sharelink are sanitised in the receive
    path; keep it that way.
 4. **Existing files are never overwritten.** A second download of `name.ext` becomes

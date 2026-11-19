@@ -61,7 +61,7 @@ with the `no-changeset` label.
   Breaking: `feat!: rename --out to --output`.
 - **Body**: `Closes #42` so the issue closes on merge.
 - CI runs: `verify` on Ubuntu and Windows (install + build, typecheck, unit tests and the DHT
-  roundtrip), `e2e` (two real CLI processes against a local bootstrapper), `no-pearcore`,
+  roundtrip), `e2e` (two real CLI processes against a local bootstrapper), the retired-engine guard,
   `pr-title`, and `changeset`.
 - Merge with **Squash and merge**. Delete the branch.
 

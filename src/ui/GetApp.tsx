@@ -3,7 +3,7 @@ import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import type { GetController, GetFile, GetSnapshot } from '../core/get.js';
 import { shortKey } from '../core/session.js';
-import { theme, truncateMiddle } from './theme.js';
+import { formatBytes, formatSpeed, theme, truncateMiddle } from './theme.js';
 import { FileList, Header, KeyHints, Panel, ProgressBar, Spinner, useListCursor, type ListRow } from './widgets.js';
 
 type StepState = 'pending' | 'active' | 'done' | 'warn';
@@ -22,7 +22,7 @@ export function GetApp({ controller, onQuit }: { controller: GetController; onQu
     }
   });
 
-  const focusIndex = state.files.findIndex((file) => file.state === 'downloading' || file.state === 'starting');
+  const focusIndex = state.files.findIndex((file) => file.state === 'downloading');
   const { cursor, follow } = useListCursor(state.files.length, listHeight - 1, focusIndex);
 
   if (state.phase === 'error') {
@@ -39,13 +39,8 @@ export function GetApp({ controller, onQuit }: { controller: GetController; onQu
 
   const { counts } = state;
   const total = state.files.length;
-  const finished = counts.done + counts.skipped + counts.error;
-  const active = counts.starting + counts.downloading;
-  const activePercent = state.files
-    .filter((file) => file.state === 'downloading')
-    .reduce((sum, file) => sum + (file.percent ?? 0), 0);
-  const overall = total > 0 ? ((finished * 100 + activePercent) / (total * 100)) * 100 : 0;
-  const allDone = total > 0 && finished === total;
+  const allDone = state.phase === 'done';
+  const where = state.downloadPath ?? state.outDir;
 
   return (
     <box flexDirection="column" width={width} height={height}>
@@ -60,95 +55,105 @@ export function GetApp({ controller, onQuit }: { controller: GetController; onQu
           <text>
             {allDone ? (
               <span fg={theme.ok} attributes={TextAttributes.BOLD}>
-                {counts.done > 0 ? '✓ All files received' : '✓ Nothing new to download'}
+                {counts.done > 0 ? '✓ All files received' : '✓ Nothing to download'}
               </span>
-            ) : active > 0 ? (
+            ) : state.phase === 'downloading' ? (
               <>
                 <Spinner /> <span fg={theme.text}>Downloading</span>
               </>
             ) : (
-              <span fg={theme.muted}>Idle</span>
+              <span fg={theme.muted}>Connecting</span>
             )}
             <span fg={theme.muted}>
-              {`  ${counts.done}/${total} done · ${active} active (max ${state.concurrency}) · ${counts.queued} queued`}
+              {`  ${counts.done}/${total} done · ${formatBytes(state.receivedBytes)} / ${formatBytes(state.totalBytes)}`}
+              {state.phase === 'downloading' ? ` · ${formatSpeed(state.speed)}` : ''}
             </span>
-            {counts.skipped > 0 ? <span fg={theme.warn}>{` · ${counts.skipped} skipped`}</span> : null}
-            {counts.error > 0 ? <span fg={theme.error}>{` · ${counts.error} failed`}</span> : null}
-            <span fg={theme.muted}>{`  → ${truncateMiddle(state.outDir, 40)}`}</span>
+            {state.failedCount > 0 ? <span fg={theme.error}>{` · ${state.failedCount} failed`}</span> : null}
+            <span fg={theme.muted}>{`  → ${truncateMiddle(where, 40)}`}</span>
           </text>
         </box>
         <box flexDirection="row" height={1}>
-          <ProgressBar percent={total > 0 ? overall : null} width={Math.max(10, width - 6)} done={allDone} />
+          <ProgressBar percent={state.percent} width={Math.max(10, width - 6)} done={allDone} />
         </box>
       </Panel>
 
-      <Panel title={`Files (${total})${state.phase === 'synced' ? ' · live' : ''}`} flexGrow={1}>
+      <Panel
+        title={`Files (${total})${state.truncated ? ` · showing ${state.truncated.shown} of ${state.truncated.available}` : ''}`}
+        flexGrow={1}
+      >
         {total === 0 ? (
-          <text fg={theme.muted}>
-            {state.phase === 'synced' ? 'Space is empty so far: waiting for the sharer to publish files…' : 'Files will appear here once connected.'}
-          </text>
+          <text fg={theme.muted}>The file list appears here once the sender answers…</text>
         ) : (
           <FileList rows={state.files.map(toRow)} height={listHeight} width={width - 4} cursor={cursor} />
         )}
       </Panel>
 
-      <KeyHints hints={[['↑↓', 'scroll'], ...(follow ? [] : ([['f', 'follow']] as Array<[string, string]>)), ['q', 'quit']]} />
+      <KeyHints hints={[['↑↓', 'scroll'], ...(follow ? [] : ([['f', 'follow']] as Array<[string, string]>) ), ['q', 'quit']]} />
     </box>
   );
 }
 
 function ConnectionBadge({ state }: { state: GetSnapshot }) {
-  if (state.ownerConnected) {
+  if (state.peerConnected) {
     return (
       <text>
-        <span fg={theme.ok}>● connected to sharer {shortKey(state.ownerKey)}</span>
+        <span fg={theme.ok}>● connected to the sender {shortKey(state.ownerKey)}</span>
       </text>
     );
   }
-  if (state.peers.length > 0) {
+  if (state.everConnected) {
     return (
       <text>
-        <span fg={theme.ok}>● {state.peers.length} peer(s)</span>
+        <span fg={theme.warn}>○ disconnected, retrying</span>
+      </text>
+    );
+  }
+  if (state.reachable === false) {
+    return (
+      <text>
+        <span fg={theme.warn}>○ offline · the DHT is unreachable</span>
       </text>
     );
   }
   return (
     <text>
-      <span fg={state.everConnected ? theme.warn : theme.muted}>
-        ○ {state.everConnected ? 'disconnected, retrying' : 'offline'}
-      </span>
+      <span fg={theme.muted}>○ looking for the sender…</span>
     </text>
   );
 }
 
 function Steps({ state }: { state: GetSnapshot }) {
-  const { phase } = state;
-  const connectedOnce = state.everConnected;
-  const live = state.peers.length > 0;
+  const connecting = state.phase === 'starting' || state.phase === 'connecting';
+  const downloading = state.phase === 'downloading';
+  const done = state.phase === 'done';
 
-  const waiting: StepState = connectedOnce ? 'done' : phase === 'waiting' ? 'active' : 'pending';
-  const connected: StepState = !connectedOnce ? 'pending' : live ? 'done' : 'warn';
-  const listing: StepState = phase === 'synced' ? 'active' : connectedOnce ? 'active' : 'pending';
-  const downloading: StepState = state.counts.downloading + state.counts.starting > 0 ? 'active' : state.counts.done > 0 ? 'done' : 'pending';
+  const found: StepState = connecting ? 'active' : 'done';
+  const listing: StepState = connecting ? 'active' : 'done';
+  const transfer: StepState = downloading ? 'active' : done ? 'done' : 'pending';
 
   return (
     <box flexDirection="column">
-      <Step state={waiting} label="Waiting for connection" detail={phase === 'starting' ? 'starting node…' : 'looking up the sharer on the DHT'} />
       <Step
-        state={connected}
-        label="Connection established"
-        detail={connectedOnce ? (live ? `peer ${shortKey(state.ownerKey)}` : 'lost connection, swarm will reconnect') : ''}
+        state={found}
+        label="Finding the sender"
+        detail={state.phase === 'starting' ? 'starting the engine…' : connecting ? 'looking up the share on the DHT' : 'connected'}
       />
       <Step
         state={listing}
-        label="Listing files"
-        detail={phase === 'synced' ? `${state.files.length} found · refreshing live` : connectedOnce ? 'syncing space…' : ''}
+        label="Reading the file list"
+        detail={connecting ? 'syncing with the sender' : state.shareName ? `“${state.shareName}”` : ''}
         spinnerColor={theme.info}
       />
       <Step
-        state={downloading}
+        state={transfer}
         label="Downloading"
-        detail={`${state.concurrency} at a time, refilled as each file completes`}
+        detail={
+          downloading
+            ? `${formatBytes(state.receivedBytes)} of ${formatBytes(state.totalBytes)} · ${formatSpeed(state.speed)}`
+            : done
+              ? `${state.counts.done} file${state.counts.done === 1 ? '' : 's'}`
+              : ''
+        }
       />
     </box>
   );
@@ -193,7 +198,15 @@ function Step({
 function toRow(file: GetFile): ListRow {
   switch (file.state) {
     case 'done':
-      return { key: file.id, icon: <span fg={theme.ok}>✓</span>, label: file.virtualPath, percent: 100, done: true, status: 'saved', statusColor: theme.ok };
+      return {
+        key: file.id,
+        icon: <span fg={theme.ok}>✓</span>,
+        label: file.virtualPath,
+        percent: 100,
+        done: true,
+        status: 'saved',
+        statusColor: theme.ok,
+      };
     case 'downloading':
       return {
         key: file.id,
@@ -201,16 +214,27 @@ function toRow(file: GetFile): ListRow {
         label: file.virtualPath,
         percent: file.percent,
         done: false,
-        status: file.percent == null ? 'fetching tree' : `${file.providers} provider${file.providers === 1 ? '' : 's'}`,
+        status: 'receiving',
         statusColor: theme.accent,
       };
-    case 'starting':
-      return { key: file.id, icon: <Spinner />, label: file.virtualPath, percent: null, done: false, status: 'starting', statusColor: theme.accent };
-    case 'skipped':
-      return { key: file.id, icon: <span fg={theme.warn}>↷</span>, label: file.virtualPath, percent: null, done: true, status: file.note ?? 'skipped', statusColor: theme.warn };
     case 'error':
-      return { key: file.id, icon: <span fg={theme.error}>✗</span>, label: file.virtualPath, percent: null, done: false, status: file.note ?? 'failed', statusColor: theme.error };
+      return {
+        key: file.id,
+        icon: <span fg={theme.error}>✗</span>,
+        label: file.virtualPath,
+        percent: null,
+        done: false,
+        status: file.note ?? 'failed',
+        statusColor: theme.error,
+      };
     default:
-      return { key: file.id, icon: <span fg={theme.muted}>·</span>, label: file.virtualPath, percent: 0, done: false, status: 'queued' };
+      return {
+        key: file.id,
+        icon: <span fg={theme.muted}>·</span>,
+        label: file.virtualPath,
+        percent: 0,
+        done: false,
+        status: formatBytes(file.size),
+      };
   }
 }

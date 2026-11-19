@@ -1,19 +1,24 @@
 {
   "name": "peardrop-cli",
   "version": "0.1.0",
-  "description": "Terminal file drop over pearcore: peardrop share <path> / peardrop get <sharelink>",
+  "description": "Terminal file drop over Hyperdrive: peardrop share <path> / peardrop get <sharelink>",
   "type": "module",
   "private": true,
   "bin": {
     "peardrop": "bin/peardrop.mjs"
   },
   "scripts": {
-    "build": "esbuild src/cli.tsx --bundle --platform=node --format=esm --target=node26 --packages=external --jsx=automatic --jsx-import-source=@opentui/react --outfile=dist/cli.js --sourcemap",
+    "build": "esbuild src/cli.tsx --bundle --platform=node --format=esm --target=node26 --packages=external --alias:@engine=./src/engine --alias:@shared=./src/shared --jsx=automatic --jsx-import-source=@opentui/react --outfile=dist/cli.js --sourcemap",
     "prepare": "npm run build",
     "start": "node bin/peardrop.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "dev:bootstrap": "node scripts/dev-bootstrap.mjs",
-    "e2e": "bash scripts/e2e.sh"
+    "e2e": "node scripts/e2e.mjs",
+    "e2e:tui": "bash scripts/e2e-tui.sh",
+    "changeset": "changeset",
+    "release:prepare": "node scripts/release-prepare.mjs"
   },
   "engines": {
     "node": ">=26.4.0"
@@ -22,13 +27,18 @@
     "@opentui/core": "0.5.11",
     "@opentui/qrcode": "0.5.11",
     "@opentui/react": "0.5.11",
-    "pearcore": "git+https://github.com/peardrive/pearcore.git",
+    "corestore": "^7.5.0",
+    "hyperdht": "^6.30.0",
+    "hyperdrive": "^13.3.0",
+    "hyperswarm": "^4.16.0",
     "react": "^19.2.8"
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
     "@types/node": "^24.10.0",
     "@types/react": "^19.3.0",
     "esbuild": "^0.25.12",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.8"
   }
 }

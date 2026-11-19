@@ -1,74 +1,94 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import * as EVENTS from 'pearcore/src/constants/events.constants.js';
-import type { LocalFileEntry, SpaceDriveBrowser, SpaceInstance } from 'pearcore/src/core.js';
-import { openSession, type PeardropSession } from './session.js';
+import { NetworkProbe } from '@engine/hyperdrive/network-probe';
+import type { ShareSourceFile } from '@engine/hyperdrive/types';
+import { createLogger, openSession, type PeardropSession } from './session.js';
 import { Store } from './store.js';
 
-const LEAF_SIZE = 256 * 1024; // pearcore DEFAULT_CHUNK_SIZE
-const INDEX_CONCURRENCY = 4;
+/** How often the DHT reachability probe is sampled for the header. */
+const COUNTERS_POLL_MS = 1000;
 
-export type ShareFileState = 'queued' | 'indexing' | 'ready' | 'skipped' | 'error';
+export type ShareFileState = 'queued' | 'copying' | 'ready' | 'error';
 
 export interface ShareFile {
   id: number;
+  /** Path shown in the UI, e.g. "/sample/nested/a.txt". */
   virtualPath: string;
   sourcePath: string;
   size: number;
   state: ShareFileState;
   percent: number;
   error?: string;
-  rootHash?: string;
-  requestedLeaves: number;
 }
 
-export type SharePhase = 'starting' | 'indexing' | 'ready' | 'error';
+export type SharePhase = 'starting' | 'copying' | 'ready' | 'error';
 
 export interface ShareSnapshot {
   phase: SharePhase;
   error?: string;
   inputPath: string;
   isDirectory: boolean;
+  shareName: string;
   sharelink?: string;
-  publicKey?: string;
+  driveId?: string;
+  /** True once the drive is announced on the DHT and reachable by link holders. */
+  announced: boolean;
   files: ShareFile[];
   counts: Record<ShareFileState, number>;
   totalBytes: number;
-  indexedBytes: number;
+  /** Bytes copied into the drive so far (the share build). */
+  copiedBytes: number;
+  /** Peers currently connected to this share. */
   receivers: string[];
-  requestedBytes: number;
+  /** Bytes actually sent to receivers. */
+  sentBytes: number;
+  /** Upload progress of the furthest-along receiver, 0–100. */
+  uploadPercent: number;
+  /** Bytes per second sent across all receivers. */
+  uploadSpeed: number;
+  /** Whether a DHT bootstrap server answers a ping; null until first checked. */
+  reachable: boolean | null;
 }
 
-interface SourceFile {
-  virtualPath: string;
-  sourcePath: string;
-  size: number;
+export interface CollectedSources {
+  isDirectory: boolean;
+  /** Display name of the share: the folder's or file's basename. */
+  shareName: string;
+  files: ShareSourceFile[];
 }
 
-/** Collect the files to share. A directory keeps its own name as the top-level folder. */
-export function collectSources(inputPath: string): { isDirectory: boolean; files: SourceFile[] } {
+/**
+ * Collect the files to share.
+ *
+ * A directory keeps its own name as the share name and its tree below it: the engine
+ * stores `relativePath` inside the drive and the receiver re-creates the tree under
+ * `<out>/<shareName>/`. A single file becomes a one-file share named after the file.
+ */
+export function collectSources(inputPath: string): CollectedSources {
   const absolute = path.resolve(inputPath);
   const stat = fs.statSync(absolute);
 
   if (stat.isFile()) {
+    const name = path.basename(absolute);
     return {
       isDirectory: false,
-      files: [{ virtualPath: `/${path.basename(absolute)}`, sourcePath: absolute, size: stat.size }],
+      shareName: name,
+      files: [{ name, path: absolute, size: stat.size, relativePath: name }],
     };
   }
 
   if (!stat.isDirectory()) throw new Error(`${inputPath} is neither a file nor a directory`);
 
-  const base = path.basename(absolute);
-  const files: SourceFile[] = [];
+  const shareName = path.basename(absolute) || 'peardrop';
+  const files: ShareSourceFile[] = [];
   const walk = (dir: string) => {
     const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.isFile()) {
-        const rel = path.relative(absolute, full).split(path.sep).join('/');
-        files.push({ virtualPath: `/${base}/${rel}`, sourcePath: full, size: fs.statSync(full).size });
+        const relativePath = path.relative(absolute, full).split(path.sep).join('/');
+        files.push({ name: entry.name, path: full, size: fs.statSync(full).size, relativePath });
       }
       // symlinks, sockets, fifos... are skipped on purpose
     }
@@ -76,7 +96,39 @@ export function collectSources(inputPath: string): { isDirectory: boolean; files
   walk(absolute);
 
   if (files.length === 0) throw new Error(`${inputPath} contains no files`);
-  return { isDirectory: true, files };
+  return { isDirectory: true, shareName, files };
+}
+
+/** The path a receiver will see for a file: "/<shareName>/<relativePath>". */
+export function virtualPathFor(shareName: string, relativePath: string, isDirectory: boolean): string {
+  return isDirectory ? `/${shareName}/${relativePath}` : `/${relativePath}`;
+}
+
+/**
+ * Map overall build progress onto the per-file rows.
+ *
+ * The engine copies files in order and reports how many are done plus the bytes copied so
+ * far, so the file at index `filesDone` is the one currently streaming.
+ */
+export function applyProgress(files: ShareFile[], filesDone: number, bytesDone: number, copying: boolean): void {
+  const done = Math.min(filesDone, files.length);
+  let completedBytes = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]!;
+    if (i < done) {
+      file.state = 'ready';
+      file.percent = 100;
+    } else if (i === done && copying) {
+      file.state = 'copying';
+      const inFile = Math.max(0, bytesDone - completedBytes);
+      file.percent = file.size > 0 ? Math.min(99, (inFile / file.size) * 100) : 0;
+    } else {
+      file.state = 'queued';
+      file.percent = 0;
+    }
+    completedBytes += file.size;
+  }
 }
 
 export class ShareController {
@@ -85,20 +137,26 @@ export class ShareController {
   #inputPath: string;
   #bootstrap: string | null;
   #session: PeardropSession | null = null;
-  #space: SpaceInstance | null = null;
-  #drive: SpaceDriveBrowser | null = null;
+  #probe: NetworkProbe | null = null;
+  #listeners: Array<[string, (...args: any[]) => void]> = [];
 
   #phase: SharePhase = 'starting';
   #error?: string;
   #isDirectory = false;
+  #shareName = '';
+  #sharelink?: string;
+  #driveId?: string;
+  /** Drive id seen in events before createDrive() returned. */
+  #eventDriveId?: string;
+  #announced = false;
   #files: ShareFile[] = [];
-  #byVirtualPath = new Map<string, ShareFile>();
-  #pending: ShareFile[] = [];
-  #active = 0;
+  #filesDone = 0;
+  #copiedBytes = 0;
   #receivers = new Set<string>();
-  #requestedLeaves = 0;
-  #flushTimer: NodeJS.Timeout | null = null;
-  #entries: LocalFileEntry[] = [];
+  #uploads = new Map<string, { bytes: number; percent: number; speed: number }>();
+  #reachable: boolean | null = null;
+  #countersTimer: NodeJS.Timeout | null = null;
+  #stopped = false;
 
   constructor(inputPath: string, bootstrap: string | null) {
     this.#inputPath = inputPath;
@@ -108,157 +166,132 @@ export class ShareController {
 
   async start(): Promise<void> {
     try {
-      const { isDirectory, files } = collectSources(this.#inputPath);
+      const { isDirectory, shareName, files } = collectSources(this.#inputPath);
       this.#isDirectory = isDirectory;
-      this.#files = files.map((file, id) => ({ ...file, id, state: 'queued', percent: 0, requestedLeaves: 0 }));
-      for (const file of this.#files) this.#byVirtualPath.set(file.virtualPath, file);
+      this.#shareName = shareName;
+      this.#files = files.map((file, id) => ({
+        id,
+        virtualPath: virtualPathFor(shareName, file.relativePath ?? file.name, isDirectory),
+        sourcePath: file.path,
+        size: file.size ?? 0,
+        state: 'queued',
+        percent: 0,
+      }));
       this.store.touch(true);
 
       this.#session = await openSession({ bootstrap: this.#bootstrap, role: 'share' });
-      const { core } = this.#session;
+      this.#wireEvents();
+      this.#startProbe();
 
-      // permissionRead=true  -> anybody holding the link may read (it is NOT "reading is restricted").
-      // permissionBroadcast=false -> only this node may publish files into the space.
-      this.#space = await core.space.create({
-        spaceName: path.basename(path.resolve(this.#inputPath)) || 'peardrop',
-        permissionRead: true,
-        permissionBroadcast: false,
-      });
-      this.#drive = core.drives.get(this.#space);
-      this.#wireNetworkEvents();
-
-      this.#phase = 'indexing';
-      // WORKAROUND: pearcore indexes a 0-byte file as one leaf but the provider then throws
-      // "Leaf index 0 out of bounds" on every content request, so receivers hang forever.
-      for (const file of this.#files) {
-        if (file.size === 0) {
-          file.state = 'skipped';
-          file.error = 'empty file';
-        }
-      }
-      this.#pending = this.#files.filter((file) => file.state === 'queued');
+      const totalBytes = files.reduce((sum, file) => sum + (file.size ?? 0), 0);
+      this.#phase = 'copying';
       this.store.touch(true);
 
-      // WORKAROUND: pearcore's FileEventBroadcaster debounces (each add() restarts a 1s timer),
-      // so while a folder is being indexed nothing reaches connected receivers. Flush periodically.
-      this.#flushTimer = setInterval(() => {
-        core.managers.spaceFiles?.fileEventBroadcaster?.flush?.().catch?.(() => {});
-      }, 1500);
+      const result = await this.#session.manager.createDrive(files, {
+        name: shareName,
+        totalBytes,
+        clientJobId: null,
+      });
 
-      this.#pump();
+      this.#driveId = result.driveId;
+      this.#sharelink = result.shareLink;
+      this.#markAllReady();
+      this.#phase = 'ready';
+      this.store.touch(true);
     } catch (error) {
       this.#fail(error);
     }
   }
 
-  /** Start indexing as long as there are free slots; a slot is released by the entry's events. */
-  #pump(): void {
-    while (this.#active < INDEX_CONCURRENCY && this.#pending.length > 0) {
-      const file = this.#pending.shift()!;
-      this.#active += 1;
-      this.#index(file).catch((error) => this.#settle(file, error));
-    }
+  #wireEvents(): void {
+    const manager = this.#session!.manager;
+    const on = (event: string, fn: (...args: any[]) => void) => {
+      manager.on(event, fn);
+      this.#listeners.push([event, fn]);
+    };
 
-    if (this.#active === 0 && this.#pending.length === 0 && this.#phase === 'indexing') {
-      this.#phase = 'ready';
-      if (this.#flushTimer) clearInterval(this.#flushTimer);
-      this.#flushTimer = null;
+    on('share-started', (data: { driveId: string }) => {
+      this.#eventDriveId = data.driveId;
+      this.#phase = 'copying';
       this.store.touch(true);
-    }
+    });
+
+    on('share-progress', (data: { driveId: string; filesDone: number; bytesDone: number }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      this.#applyProgress(data.filesDone, data.bytesDone);
+      this.store.touch();
+    });
+
+    on('drive-announced', (data: { driveId: string }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      this.#announced = true;
+      this.store.touch(true);
+    });
+
+    on('drive-announce-failed', (data: { driveId: string }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      this.#announced = false;
+      this.store.touch(true);
+    });
+
+    on('peer-connected', (data: { driveId: string; peerId: string; publicKey: string | null }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      this.#receivers.add(data.publicKey ?? data.peerId);
+      this.store.touch(true);
+    });
+
+    on('peer-disconnected', (data: { driveId: string; peerId: string; publicKey: string | null }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      if (this.#receivers.delete(data.publicKey ?? data.peerId)) this.store.touch(true);
+    });
+
+    on('upload-progress', (data: { driveId: string; peerId: string; percent: number; bytesTransferred: number; speed: number }) => {
+      if (!this.#isOurs(data.driveId)) return;
+      const previous = this.#uploads.get(data.peerId);
+      this.#uploads.set(data.peerId, {
+        bytes: Math.max(previous?.bytes ?? 0, data.bytesTransferred),
+        percent: Math.max(previous?.percent ?? 0, data.percent),
+        speed: data.speed,
+      });
+      this.store.touch();
+    });
   }
 
-  async #index(file: ShareFile): Promise<void> {
-    const drive = this.#drive!;
-    file.state = 'indexing';
-    this.store.touch();
-
-    const entry = await drive.addFile(file.virtualPath, file.sourcePath);
-    this.#entries.push(entry);
-
-    entry.onIndexing((snapshot) => {
-      if (snapshot?.percent != null) {
-        file.percent = snapshot.percent;
-        this.store.touch();
-      }
-    });
-    entry.onComplete(() => {
-      file.rootHash = entry.rootHash ?? undefined;
-      this.#settle(file);
-    });
-    entry.onError((error) => this.#settle(file, error));
+  /** True when an event belongs to this run's drive (id may arrive before createDrive resolves). */
+  #isOurs(driveId: string): boolean {
+    const ours = this.#driveId ?? this.#eventDriveId;
+    return !ours || ours === driveId;
   }
 
-  #settle(file: ShareFile, error?: unknown): void {
-    if (file.state === 'ready' || file.state === 'error') return; // entry callbacks are not guaranteed to be single-shot
-    if (error) {
-      file.state = 'error';
-      file.error = error instanceof Error ? error.message : String(error);
-    } else {
+  /** Map overall build progress onto the per-file rows. */
+  #applyProgress(filesDone: number, bytesDone: number): void {
+    this.#filesDone = Math.min(filesDone, this.#files.length);
+    this.#copiedBytes = bytesDone;
+    applyProgress(this.#files, this.#filesDone, bytesDone, this.#phase === 'copying');
+  }
+
+  #markAllReady(): void {
+    this.#filesDone = this.#files.length;
+    this.#copiedBytes = this.#files.reduce((sum, file) => sum + file.size, 0);
+    for (const file of this.#files) {
       file.state = 'ready';
       file.percent = 100;
     }
-    this.#active -= 1;
-    this.store.touch();
-    this.#pump();
   }
 
-  #wireNetworkEvents(): void {
-    const { core } = this.#session!;
-    const topic = this.#space!.topicHash;
+  #startProbe(): void {
+    const session = this.#session!;
+    this.#probe = new NetworkProbe({ bootstrap: session.nodes, log: createLogger() });
+    this.#probe.start();
 
-    core.emitter.on(EVENTS.SpaceHashList, ({ message, topics }: any) => {
-      if (!Array.isArray(topics) || !topics.includes(topic)) return;
-      const peer: string = message.publicKey;
-      this.#receivers.add(peer);
+    const tick = () => {
+      if (this.#stopped) return;
+      this.#reachable = this.#probe?.reachable ?? null;
       this.store.touch();
-      this.#pushFileList(peer, 0);
-    });
-
-    core.emitter.on(EVENTS.Disconnect, ({ publicKey }: any) => {
-      if (this.#receivers.delete(publicKey)) this.store.touch();
-    });
-
-    core.emitter.on(EVENTS.SpaceFileContentRequest, ({ message }: any) => {
-      const payload = message?.payload;
-      if (!payload || !Array.isArray(payload.slice)) return;
-      const [from, to] = payload.slice as [number, number];
-      const leaves = Math.max(0, to - from + 1);
-      this.#requestedLeaves += leaves;
-      const file = this.#byVirtualPath.get(payload.spaceFilePath);
-      if (file) file.requestedLeaves += leaves;
-      this.store.touch();
-    });
-
-    // A receiver processes messages concurrently, so our file list can overtake the
-    // SpaceSync that creates its space record and gets rejected with "space is not found".
-    core.emitter.on(EVENTS.Reject, ({ message }: any) => {
-      const reason: string | undefined = message?.payload?.reason;
-      if (reason === 'space is not found' && this.#receivers.has(message.publicKey)) {
-        this.#pushFileList(message.publicKey, 1);
-      }
-    });
-  }
-
-  #pushAttempts = new Map<string, number>();
-
-  /**
-   * WORKAROUND: pearcore only sends a space's file list to the node that *receives* a SpaceSync.
-   * The owner sends SpaceSync to a newcomer but never its file list, so a receiver that joins
-   * after indexing finished would see an empty drive. Push the list ourselves.
-   */
-  #pushFileList(peer: string, attemptDelta: number): void {
-    const attempts = (this.#pushAttempts.get(peer) ?? 0) + attemptDelta;
-    if (attempts > 6) return;
-    this.#pushAttempts.set(peer, attempts);
-
-    setTimeout(() => {
-      const core = this.#session?.core;
-      if (!core || !this.#space) return;
-      const socket = core.managers.sockets.getConnectedSockets({ peers: [peer] })[0];
-      const handler = core.managers.message.protocolHandlers.get(EVENTS.SpaceSync);
-      if (!socket || !handler?.sendSpaceFileListContextToSocket) return;
-      handler.sendSpaceFileListContextToSocket(socket, this.#space.topicHash).catch(() => {});
-    }, 300 + attempts * 400);
+      this.#countersTimer = setTimeout(tick, COUNTERS_POLL_MS);
+      this.#countersTimer.unref?.();
+    };
+    tick();
   }
 
   #fail(error: unknown): void {
@@ -268,19 +301,35 @@ export class ShareController {
   }
 
   async stop(): Promise<void> {
-    if (this.#flushTimer) clearInterval(this.#flushTimer);
+    this.#stopped = true;
+    if (this.#countersTimer) clearTimeout(this.#countersTimer);
+    this.#countersTimer = null;
+
+    const manager = this.#session?.manager;
+    for (const [event, fn] of this.#listeners) manager?.removeListener(event, fn);
+    this.#listeners = [];
+
+    await this.#probe?.stop();
+    this.#probe = null;
     this.store.dispose();
     await this.#session?.close();
   }
 
   #snapshot(): ShareSnapshot {
-    const counts: Record<ShareFileState, number> = { queued: 0, indexing: 0, ready: 0, skipped: 0, error: 0 };
+    const counts: Record<ShareFileState, number> = { queued: 0, copying: 0, ready: 0, error: 0 };
     let totalBytes = 0;
-    let indexedBytes = 0;
     for (const file of this.#files) {
       counts[file.state] += 1;
       totalBytes += file.size;
-      indexedBytes += file.state === 'ready' ? file.size : file.state === 'indexing' ? (file.size * file.percent) / 100 : 0;
+    }
+
+    let sentBytes = 0;
+    let uploadPercent = 0;
+    let uploadSpeed = 0;
+    for (const upload of this.#uploads.values()) {
+      sentBytes += upload.bytes;
+      uploadPercent = Math.max(uploadPercent, upload.percent);
+      uploadSpeed += upload.speed;
     }
 
     return {
@@ -288,14 +337,19 @@ export class ShareController {
       error: this.#error,
       inputPath: this.#inputPath,
       isDirectory: this.#isDirectory,
-      sharelink: this.#space?.sharelink,
-      publicKey: this.#session?.core.getPublicKey(),
+      shareName: this.#shareName,
+      sharelink: this.#sharelink,
+      driveId: this.#driveId,
+      announced: this.#announced,
       files: this.#files.map((file) => ({ ...file })),
       counts,
       totalBytes,
-      indexedBytes,
+      copiedBytes: this.#phase === 'ready' ? totalBytes : this.#copiedBytes,
       receivers: [...this.#receivers],
-      requestedBytes: this.#requestedLeaves * LEAF_SIZE,
+      sentBytes,
+      uploadPercent,
+      uploadSpeed,
+      reachable: this.#reachable,
     };
   }
 }

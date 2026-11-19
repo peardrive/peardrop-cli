@@ -15,6 +15,14 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
 
+    // The engine and shared domain types are vendored from the desktop app and
+    // keep their original aliases, so syncing them stays a straight copy.
+    // Paths resolve relative to this file; `baseUrl` is deprecated in TypeScript 6/7.
+    "paths": {
+      "@engine/*": ["./src/engine/*"],
+      "@shared/*": ["./src/shared/*"]
+    },
+
     // Best practices
     "strict": true,
     "skipLibCheck": true,

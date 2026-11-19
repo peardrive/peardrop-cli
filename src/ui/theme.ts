@@ -28,6 +28,12 @@ export function formatPercent(percent: number | null | undefined): string {
   return `${Math.floor(Math.min(100, Math.max(0, percent)))}%`.padStart(4);
 }
 
+/** "1.2 MB/s", or an em dash when nothing is moving. */
+export function formatSpeed(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '—';
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
 /** Shorten a path in the middle so both the folder context and the file name stay visible. */
 export function truncateMiddle(value: string, width: number): string {
   if (width <= 0) return '';

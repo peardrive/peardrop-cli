@@ -1,0 +1,59 @@
+name: Feature request
+description: A new command, flag, event or behaviour
+title: "feat: "
+labels: ["type: feature", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first, then the shape you'd like the CLI to take.
+        Every change starts as an issue marked `status: ready` and lands on `develop` through a PR.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The situation you're in and what's missing or awkward today.
+      placeholder: I want to resume a download after the laptop sleeps, but `peardrop get` starts over.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed interface
+      description: Commands, flags, output events or behaviour. Exact spelling helps.
+      render: shell
+      placeholder: |
+        peardrop get <sharelink> --resume
+        {"event":"resumed","bytesDone":1770000}
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, or other shapes that could work.
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Surface impact
+      options:
+        - Additive (new command, flag or event)
+        - Behaviour change to something existing
+        - Breaking change
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Area
+      options:
+        - label: CLI arguments / help
+        - label: TUI screens
+        - label: Headless `--json` mode
+        - label: Transfer engine
+        - label: Docs

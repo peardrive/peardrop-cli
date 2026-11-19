@@ -1,0 +1,86 @@
+name: Bug report
+description: Something behaves incorrectly
+title: "fix: "
+labels: ["type: bug", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Include the exact command and as much of the output as you can;
+        `--json` output and `~/.peardrop/peardrop.log` are the most useful artifacts.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: From the release tag, or `node -p "require('./package.json').version"`.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Run `node --version`.
+      placeholder: v26.4.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      multiple: true
+      options:
+        - Windows
+        - macOS
+        - Linux (X11)
+        - Linux (Wayland)
+        - WSL
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - TUI (`peardrop share` / `peardrop get`)
+        - Headless (`--json`)
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. npm run dev:bootstrap
+        2. node bin/peardrop.mjs share ./photos --bootstrap 127.0.0.1:49737 --json
+        3. node bin/peardrop.mjs get '<link>' -o ./out --bootstrap 127.0.0.1:49737 --json
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: Paste the error or the `--json` lines. Redact sharelinks.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from `~/.peardrop/peardrop.log`, if any.
+      render: shell

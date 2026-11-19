@@ -1,17 +1,23 @@
 name: CI
 
+# Runs on every PR into develop or main, and on the branches themselves.
+# Short-lived work branches are covered by their PR.
 on:
-  push:
-    branches: [master, main, 'feat/**']
   pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  test:
-    name: typecheck + unit (${{ matrix.os }})
+  verify:
+    name: verify (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -25,15 +31,20 @@ jobs:
           node-version: '26.x'
           cache: npm
 
-      - run: npm ci
+      # `npm ci` also runs the `prepare` script, which builds dist/.
+      # A broken build therefore fails here.
+      - name: Install and build
+        run: npm ci
 
-      - run: npm run typecheck
+      - name: Typecheck
+        run: npm run typecheck
 
       # Unit tests plus the in-process DHT roundtrip (no TUI, no tmux).
-      - run: npm test
+      - name: Unit tests
+        run: npm test
 
   e2e:
-    name: headless e2e
+    name: e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +57,8 @@ jobs:
       - run: npm ci
 
       # Two real CLI processes, a local bootstrapper, and a byte-for-byte comparison.
-      - run: npm run e2e
+      - name: Headless e2e
+        run: npm run e2e
 
       - name: Upload logs
         if: failure()
@@ -58,7 +70,7 @@ jobs:
           if-no-files-found: ignore
 
   no-pearcore:
-    name: no pearcore references
+    name: no-pearcore
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,3 +82,83 @@ jobs:
             exit 1
           fi
           echo "clean"
+
+  pr-title:
+    name: pr-title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+            release
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            Start the subject with a lowercase letter, e.g. "feat: add --json to peardrop get".
+
+  changeset:
+    name: changeset
+    # Feature/fix PRs into develop must describe their change for the changelog.
+    # Release PRs consume changesets, so they're exempt; so is anything labelled `no-changeset`.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'develop' &&
+      !startsWith(github.head_ref, 'release/') &&
+      !contains(github.event.pull_request.labels.*.name, 'no-changeset')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a changeset
+        run: |
+          added=$(git diff --name-only --diff-filter=A "origin/${{ github.base_ref }}...HEAD" -- '.changeset/*.md' | grep -v 'README.md' || true)
+          if [ -z "$added" ]; then
+            echo "::error::No changeset found. Run 'npx changeset', commit the file, and push. For CI/tooling-only PRs, add the 'no-changeset' label."
+            exit 1
+          fi
+          echo "Changesets in this PR:"; echo "$added"
+
+  release-source:
+    name: release-source
+    # main only accepts release PRs from develop, or hotfix branches.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check source branch
+        run: |
+          head="${{ github.head_ref }}"
+          case "$head" in
+            develop|hotfix/*) echo "Source branch '$head' is allowed." ;;
+            *) echo "::error::PRs into main must come from 'develop' (a release) or 'hotfix/*'. Retarget this PR to develop."; exit 1 ;;
+          esac
+      - name: Check version was bumped
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version is already released. Run the release prep (npm run release:prepare) on develop first."
+            exit 1
+          fi
+          if ls .changeset/*.md 2>/dev/null | grep -v README.md; then
+            echo "::error::Unconsumed changesets found. Run 'npm run release:prepare' so they're written into CHANGELOG.md."
+            exit 1
+          fi
+          echo "Releasing v$version"

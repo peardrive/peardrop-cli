@@ -123,3 +123,22 @@ src/shared/             backend-neutral transfer/bootstrap types used by the eng
 src/ui/*                OpenTUI React screens and widgets
 scripts/                local bootstrapper, test-only DHT preload, e2e runners
 ```
+
+## Contributing
+
+Work starts from an issue and lands on `develop` through a PR; `main` only holds releases.
+
+```bash
+git switch develop && git pull --ff-only
+git switch -c feat/42-resume-download
+# … make the change, then describe it for the changelog:
+npx changeset
+```
+
+PRs into `develop` are squash-merged and must pass typecheck, unit tests, the DHT roundtrip,
+headless e2e, `pr-title` and `changeset`. Releases are cut from `develop` with
+`npm run release:prepare` and merged into `main`, where CI tags `vX.Y.Z` and publishes a GitHub
+Release. Read [docs/contributing.md](docs/contributing.md) and
+[docs/releasing.md](docs/releasing.md) for the full flow, branch naming and versioning.
+
+The current version is **0.1.0**; see [CHANGELOG.md](CHANGELOG.md).

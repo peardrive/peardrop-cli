@@ -1,6 +1,6 @@
 {
   "name": "peardrop-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Terminal file drop over Hyperdrive: peardrop share <path> / peardrop get <sharelink>",
   "type": "module",
   "private": true,

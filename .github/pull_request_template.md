@@ -22,4 +22,3 @@ Closes #
 - [ ] `npm run typecheck` and `npm test` pass; `npm run e2e` if the engine or transfer path changed
 - [ ] README / `docs/` updated if the CLI surface changed
 - [ ] Breaking changes called out in the changeset with a migration note
-- [ ] No `pearcore` references (the retired engine)

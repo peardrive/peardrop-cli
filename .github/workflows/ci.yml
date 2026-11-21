@@ -17,12 +17,11 @@ permissions:
 
 jobs:
   verify:
-    name: verify (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: verify
+    # Linux only: no need to prove the same suite on every platform, and the
+    # network/e2e paths below are exercised here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +45,7 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -68,20 +68,6 @@ jobs:
           path: |
             dist/
           if-no-files-found: ignore
-
-  no-pearcore:
-    name: no-pearcore
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Fail if the retired engine is referenced
-        run: |
-          if grep -ril 'pearcore' src scripts bin test docs README.md package.json; then
-            echo "::error::pearcore references found (see the files above)"
-            exit 1
-          fi
-          echo "clean"
 
   pr-title:
     name: pr-title

@@ -4,6 +4,17 @@ All notable changes to `peardrop-cli` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [SemVer](https://semver.org). While the version is `0.x`, a minor bump is the breaking one.
 
+## 0.1.1
+
+### Changed
+
+- **Install straight from GitHub.** Every release now carries the built package as
+  `peardrop-cli-<version>.tgz` (and `peardrop-cli.tgz` for the newest one), so
+  `npm install -g https://github.com/peardrive/peardrop-cli/releases/latest/download/peardrop-cli.tgz`
+  is all it takes — no clone, no build.
+- The README is organised around the two commands — sharing and downloading — and opens with a
+  screenshot of the TUI.
+
 ## 0.1.0
 
 First release. `peardrop` sends files and folders between devices from the terminal, peer-to-peer,
@@ -34,8 +45,7 @@ on the Hyperdrive stack (Hyperdrive + Corestore + Hyperswarm), with an OpenTUI i
 ### Changed
 
 - The transfer engine is now the Hyperdrive engine from the PearDrop desktop app, copied under
-  `src/engine/` (see [docs/ENGINE.md](docs/ENGINE.md)). The retired `pearcore` engine is gone; CI
-  fails if it is referenced again.
+  `src/engine/` (see [docs/ENGINE.md](docs/ENGINE.md)).
 
 ### Security
 

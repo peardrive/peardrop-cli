@@ -5,6 +5,11 @@ name: CI
 on:
   pull_request:
     branches: [develop, main]
+    # `labeled` matters: the changeset job is skipped for a `no-changeset` PR, and
+    # re-running a workflow replays the original event, so a label added after the
+    # first run would never be seen. Listing the types makes a label change start a
+    # fresh run with the current labels.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   push:
     branches: [develop, main]
 

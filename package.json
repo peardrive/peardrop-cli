@@ -7,6 +7,10 @@
   "bin": {
     "peardrop": "bin/peardrop.mjs"
   },
+  "files": [
+    "bin",
+    "dist"
+  ],
   "scripts": {
     "build": "esbuild src/cli.tsx --bundle --platform=node --format=esm --target=node26 --packages=external --alias:@engine=./src/engine --alias:@shared=./src/shared --jsx=automatic --jsx-import-source=@opentui/react --outfile=dist/cli.js --sourcemap",
     "prepare": "npm run build",

@@ -60,9 +60,8 @@ with the `no-changeset` label.
   `chore: bump @opentui to 0.5.12`.
   Breaking: `feat!: rename --out to --output`.
 - **Body**: `Closes #42` so the issue closes on merge.
-- CI runs: `verify` on Ubuntu and Windows (install + build, typecheck, unit tests and the DHT
-  roundtrip), `e2e` (two real CLI processes against a local bootstrapper), the retired-engine guard,
-  `pr-title`, and `changeset`.
+- CI runs on Linux: `verify` (install + build, typecheck, unit tests and the DHT roundtrip),
+  `e2e` (two real CLI processes against a local bootstrapper), `pr-title`, and `changeset`.
 - Merge with **Squash and merge**. Delete the branch.
 
 ## 5. Release
@@ -83,8 +82,9 @@ This creates `release/vX.Y.Z`, runs `changeset version` (bumps `package.json`, w
 2. Open a PR **develop → main** titled `release: vX.Y.Z`. CI's `release-source` check confirms it
    comes from `develop`, the version is new and no changesets are left. Merge with **Create a merge
    commit**.
-3. The **Release** workflow tags the merge commit `vX.Y.Z` and publishes a GitHub Release with that
-   version's changelog section.
+3. The **Release** workflow tags the merge commit `vX.Y.Z`, builds and smoke-tests the package,
+   and publishes a GitHub Release with that version's changelog section and the installable
+   `peardrop-cli-X.Y.Z.tgz` attached.
 4. Close the milestone.
 
 GitHub will show `develop` as "1 commit behind main" after each release. That is the release merge
@@ -105,8 +105,8 @@ holds unreleased work that can't ship yet:
 1. `git switch -c hotfix/71-stall-on-resume origin/main`, fix it, `npx changeset` (patch).
 2. Run `npx changeset version`, then `npm install --package-lock-only`, and commit
    `chore(release): vX.Y.Z`.
-3. PR `hotfix/71-stall-on-resume` → `main` titled `release: vX.Y.Z`, merge commit. The tag and
-   Release are created automatically.
+3. PR `hotfix/71-stall-on-resume` → `main` titled `release: vX.Y.Z`, merge commit. The tag, the
+   package and the Release are created automatically.
 4. Bring the fix to develop: `git switch -c fix/71-port-hotfix origin/develop`,
    `git cherry-pick <hotfix commits>`, PR into `develop` with label `no-changeset`, squash-merge.
 
@@ -118,15 +118,33 @@ minor. Patch releases are bug fixes and internal work.
 
 ## Using a release
 
-Releases are the supported points to install from:
+Releases are the supported points to install from. Each one carries the built package, so no
+clone or build is needed:
 
 ```bash
-git clone --branch v0.1.0 https://github.com/<owner>/<repo>.git peardrop-cli
+# newest release
+npm install -g https://github.com/peardrive/peardrop-cli/releases/latest/download/peardrop-cli.tgz
+
+# or pin a version
+npm install -g https://github.com/peardrive/peardrop-cli/releases/download/v0.1.0/peardrop-cli-0.1.0.tgz
+```
+
+The tarball is what `npm pack` produces from `bin/` and `dist/` (`files` in `package.json`); its
+dependencies come from npm, and Node.js ≥ 26.4 is required. Every release also has the source
+archives GitHub generates for the tag, if you want to read the code:
+
+```bash
+git clone --branch v0.1.0 https://github.com/peardrive/peardrop-cli.git peardrop-cli
 cd peardrop-cli && npm install && npm link
 ```
 
 Installing from `main` gets the latest release; installing from `develop` gets unreleased work and
 is not supported for day-to-day use.
+
+A release is published by the **Release** workflow (`.github/workflows/release.yml`) on every push
+to `main`. It builds and smoke-tests the package before tagging, so a broken build leaves no tag
+behind; if the version was not bumped, the job fails instead of moving the existing tag. Re-running
+a failed job re-uploads the assets to the existing release.
 
 ## One-time GitHub setup (maintainer)
 

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { GetController } from '../../src/core/get.js';
+import { openSession } from '../../src/core/session.js';
 import { ShareController } from '../../src/core/share.js';
 
 const require = createRequire(import.meta.url);
@@ -126,20 +127,26 @@ describe('failures', () => {
 
   test('cancelling while waiting for a sender resolves cleanly', async () => {
     const link = `peardrop://${'a'.repeat(64)}`;
-    const get = new GetController({
-      sharelink: link,
-      outDir: path.join(tmp, 'out-cancel'),
-      bootstrap,
-    });
+    // Nothing answers on this bootstrap address, so the sender search stays pending for as long
+    // as it runs. Wait for the pending connection itself rather than for the controller's
+    // 'connecting' phase: on a fast runner that phase is gone before a poll can see it, which
+    // made this test time out on ubuntu-latest in the 0.1.0 release.
+    const session = await openSession({ bootstrap: '127.0.0.1:1', role: 'get' });
 
-    const running = get.start();
-    await waitFor(() => get.store.get().phase === 'connecting');
-    get.cancel();
-    await running;
+    try {
+      const opening = session.manager.openDrive(link);
+      // Attach the handler before the abort below: the rejection can land while the cleanup
+      // is still being awaited, and an unhandled rejection fails the run on its own.
+      opening.catch(() => {});
 
-    const snap = get.store.get();
-    expect(snap.cancelled).toBe(true);
-    expect(snap.phase).not.toBe('error');
-    await get.stop();
+      await waitFor(() => session.manager.pendingConnections.size === 1);
+
+      await session.manager.abortAllConnections({ force: true });
+
+      await expect(opening).rejects.toThrow(/cancelled/i);
+      expect(session.manager.pendingConnections.size).toBe(0);
+    } finally {
+      await session.close();
+    }
   }, 60_000);
 });

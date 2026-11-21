@@ -2,7 +2,7 @@
   <img src="docs/screenshots/share-folder.png" alt="peardrop share, running in a terminal" width="860">
 </p>
 
-<h1 align="center">peardrop</h1>
+<h1 align="center">peardrop CLI</h1>
 
 <p align="center">
   <strong>Send files and folders between devices from the terminal.</strong><br>

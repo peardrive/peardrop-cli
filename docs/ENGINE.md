@@ -24,7 +24,7 @@ Everything is byte-identical except these edits, each forced by something the CL
 | `engine/hyperdrive/receive.ts` | `const only = contents.files[0]!` | same |
 | `engine/hyperdrive/share.ts` | `fileEntries[0]!.name` | same |
 | `engine/hyperdrive/downloader.ts` | added optional `onFileStart` / `onFileDone` callbacks | the CLI shows per-file progress; the desktop app only uses aggregate progress |
-| `shared/bootstrap.ts` | reworded header comment | it no longer mentions the retired engine |
+| `shared/bootstrap.ts` | reworded header comment | keeps the CLI's wording |
 
 The downloader addition is purely additive: desktop passes neither callback, and both default to
 a no-op.

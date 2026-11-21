@@ -1,12 +1,16 @@
 {
   "name": "peardrop-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Terminal file drop over Hyperdrive: peardrop share <path> / peardrop get <sharelink>",
   "type": "module",
   "private": true,
   "bin": {
     "peardrop": "bin/peardrop.mjs"
   },
+  "files": [
+    "bin",
+    "dist"
+  ],
   "scripts": {
     "build": "esbuild src/cli.tsx --bundle --platform=node --format=esm --target=node26 --packages=external --alias:@engine=./src/engine --alias:@shared=./src/shared --jsx=automatic --jsx-import-source=@opentui/react --outfile=dist/cli.js --sourcemap",
     "prepare": "npm run build",

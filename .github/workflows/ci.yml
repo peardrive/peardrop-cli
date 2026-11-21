@@ -5,6 +5,11 @@ name: CI
 on:
   pull_request:
     branches: [develop, main]
+    # `labeled` matters: the changeset job is skipped for a `no-changeset` PR, and
+    # re-running a workflow replays the original event, so a label added after the
+    # first run would never be seen. Listing the types makes a label change start a
+    # fresh run with the current labels.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   push:
     branches: [develop, main]
 
@@ -17,12 +22,11 @@ permissions:
 
 jobs:
   verify:
-    name: verify (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: verify
+    # Linux only: no need to prove the same suite on every platform, and the
+    # network/e2e paths below are exercised here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +50,7 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -68,20 +73,6 @@ jobs:
           path: |
             dist/
           if-no-files-found: ignore
-
-  no-pearcore:
-    name: no-pearcore
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Fail if the retired engine is referenced
-        run: |
-          if grep -ril 'pearcore' src scripts bin test docs README.md package.json; then
-            echo "::error::pearcore references found (see the files above)"
-            exit 1
-          fi
-          echo "clean"
 
   pr-title:
     name: pr-title

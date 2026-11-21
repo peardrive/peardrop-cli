@@ -50,8 +50,13 @@ jobs:
           npm ci
           mkdir -p "$RUNNER_TEMP/pkg"
           npm pack --pack-destination "$RUNNER_TEMP/pkg" --silent
+          # npm names the tarball after the package, so this is where it already landed.
           tarball="$RUNNER_TEMP/pkg/${{ steps.v.outputs.tarball }}"
-          mv "$RUNNER_TEMP/pkg/peardrop-cli-${{ steps.v.outputs.version }}.tgz" "$tarball"
+          if [ ! -f "$tarball" ]; then
+            echo "::error::npm pack did not produce $tarball"
+            ls -l "$RUNNER_TEMP/pkg"
+            exit 1
+          fi
           # The same package under a stable name: /releases/latest/download/peardrop-cli.tgz
           cp "$tarball" "$RUNNER_TEMP/pkg/peardrop-cli.tgz"
           tar -tzf "$tarball" | head -n 20

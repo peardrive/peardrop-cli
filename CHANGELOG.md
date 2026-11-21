@@ -34,8 +34,7 @@ on the Hyperdrive stack (Hyperdrive + Corestore + Hyperswarm), with an OpenTUI i
 ### Changed
 
 - The transfer engine is now the Hyperdrive engine from the PearDrop desktop app, copied under
-  `src/engine/` (see [docs/ENGINE.md](docs/ENGINE.md)). The retired `pearcore` engine is gone; CI
-  fails if it is referenced again.
+  `src/engine/` (see [docs/ENGINE.md](docs/ENGINE.md)).
 
 ### Security
 

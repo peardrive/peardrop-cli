@@ -62,15 +62,13 @@ RELEASING.md            GitFlow, releases, hotfixes, one-time setup
 1. **The engine is a copy, not a dependency.** `src/engine/` mirrors the PearDrop desktop app's
    engine; keep edits minimal and record them in [docs/ENGINE.md](docs/ENGINE.md) so a re-sync stays a
    straight copy.
-2. **The retired engine stays retired.** It must not come back; CI's guard job fails the build if
-   its name appears in `src`, `scripts`, `bin`, `test`, `docs`, `README.md` or `package.json`.
-3. **Never write outside the output folder.** Paths from a sharelink are sanitised in the receive
+2. **Never write outside the output folder.** Paths from a sharelink are sanitised in the receive
    path; keep it that way.
-4. **Existing files are never overwritten.** A second download of `name.ext` becomes
+3. **Existing files are never overwritten.** A second download of `name.ext` becomes
    `name (1).ext`.
-5. **`--json` is a stable surface.** Event names and fields are what scripts consume; changing or
+4. **`--json` is a stable surface.** Event names and fields are what scripts consume; changing or
    removing one is a breaking change and needs a changeset that says so.
-6. **Test both ends.** Engine or transfer changes need `npm test` and `npm run e2e`; UI-only changes
+5. **Test both ends.** Engine or transfer changes need `npm test` and `npm run e2e`; UI-only changes
    at least need `npm run typecheck` and a manual TUI run.
-7. **Public surface changes need a changeset.** Renaming or removing a command, flag, event or exit
+6. **Public surface changes need a changeset.** Renaming or removing a command, flag, event or exit
    code is breaking: say so in the changeset and include a migration note.

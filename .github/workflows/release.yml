@@ -1,8 +1,11 @@
 name: Release
 
-# Every push to main is a release (a merged release PR or hotfix).
-# This tags the commit with v<package.json version> and publishes a GitHub Release
-# whose notes are that version's section of CHANGELOG.md.
+# Every push to main is a release (a merged release PR, a hotfix, or develop fast-forwarded
+# into main). The job builds the installable package, smoke-tests it, tags the commit
+# v<package.json version> and publishes a GitHub Release whose notes are that version's
+# section of CHANGELOG.md, with the package tarball attached.
+#
+# Nothing is tagged or published if the build or the smoke test fails.
 on:
   push:
     branches: [main]
@@ -19,17 +22,46 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
       - name: Read version
         id: v
         run: |
           version=$(node -p "require('./package.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "tarball=peardrop-cli-$version.tgz"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
+      # Build and pack first: a package that cannot be built must never create a tag.
+      - name: Build and pack
+        run: |
+          npm ci
+          mkdir -p "$RUNNER_TEMP/pkg"
+          npm pack --pack-destination "$RUNNER_TEMP/pkg" --silent
+          tarball="$RUNNER_TEMP/pkg/${{ steps.v.outputs.tarball }}"
+          mv "$RUNNER_TEMP/pkg/peardrop-cli-${{ steps.v.outputs.version }}.tgz" "$tarball"
+          # The same package under a stable name: /releases/latest/download/peardrop-cli.tgz
+          cp "$tarball" "$RUNNER_TEMP/pkg/peardrop-cli.tgz"
+          tar -tzf "$tarball" | head -n 20
+          ls -l "$RUNNER_TEMP/pkg"
+
+      # Proves the artifact installs and starts before anything is published.
+      - name: Smoke-test the package
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/inst" "$RUNNER_TEMP/pkg/${{ steps.v.outputs.tarball }}"
+          "$RUNNER_TEMP/inst/bin/peardrop" --help | head -n 3
 
       - name: Extract release notes
         run: |
@@ -39,16 +71,33 @@ jobs:
             on { print }
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then echo "Release ${{ steps.v.outputs.tag }}" > notes.md; fi
+
+          # Quoted delimiter: the backticks and $ in the body are literal markdown.
+          cat >> notes.md <<'EOF'
+
+          ## Install
+
+          Requires Node.js ≥ 26.4.
+
+          ```bash
+          npm install -g https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}/${{ steps.v.outputs.tarball }}
+          ```
+
+          The latest release is always available as
+          `https://github.com/${{ github.repository }}/releases/latest/download/peardrop-cli.tgz`.
+          EOF
           cat notes.md
 
       - name: Tag
         run: |
           tag="${{ steps.v.outputs.tag }}"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            if [ "$(git rev-list -n1 "$tag")" != "$GITHUB_SHA" ]; then
-              echo "::warning::$tag already exists on another commit; not moving it. Did this push forget to bump the version?"
+            if [ "$(git rev-list -n1 "$tag")" = "$GITHUB_SHA" ]; then
+              echo "$tag already points at this commit; re-publishing its assets."
+              exit 0
             fi
-            exit 0
+            echo "::error::$tag already exists on another commit. Bump the version (npx changeset version) and push again."
+            exit 1
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -60,10 +109,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ steps.v.outputs.tag }}"
+          version="${{ steps.v.outputs.version }}"
+          assets=(
+            "$RUNNER_TEMP/pkg/${{ steps.v.outputs.tarball }}"
+            "$RUNNER_TEMP/pkg/peardrop-cli.tgz"
+          )
+
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists."
+            # A retried job: keep the notes, make sure the package is attached.
+            echo "Release $tag already exists; updating its assets."
+            gh release upload "$tag" "${assets[@]}" --clobber
           else
             prerelease=""
-            case "${{ steps.v.outputs.version }}" in *-*) prerelease="--prerelease" ;; esac
-            gh release create "$tag" --verify-tag --title "peardrop-cli $tag" --notes-file notes.md $prerelease
+            case "$version" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$tag" --verify-tag --title "peardrop-cli $tag" \
+              --notes-file notes.md $prerelease "${assets[@]}"
           fi
+
+          gh release view "$tag" --json url,assets \
+            --jq '.url, (.assets[] | "  \(.name) (\(.size) bytes)")'
